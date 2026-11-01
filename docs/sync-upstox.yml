@@ -1,0 +1,29 @@
+name: Sync live IPO data
+
+on:
+  schedule:
+    # Every 30 minutes between 08:30 and 18:30 IST on weekdays, when bidding and subscription change.
+    - cron: '*/30 3-13 * * 1-5'
+    # Every 6 hours otherwise, to catch new announcements and weekend changes.
+    - cron: '15 */6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ipo-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run sync
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}

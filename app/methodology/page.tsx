@@ -1,12 +1,13 @@
 import type { Metadata } from 'next';
-import { SEED_IPOS } from '@/lib/data/seed';
+import { SAMPLE_IPOS } from '@/lib/fixtures/sample';
 import { MODEL_VERSION, rate } from '@/lib/scoring';
 
 export const metadata: Metadata = { title: 'How scores work' };
 
 export default function Methodology() {
-  // Factor definitions (weights and rules) do not depend on the company, so any record can supply them.
-  const factors = rate(SEED_IPOS[0]).factors;
+  // Factor definitions (weights and rules) do not depend on the company, so a test fixture supplies them.
+  // Fixture numbers are never displayed on this page.
+  const factors = rate(SAMPLE_IPOS[0]).factors;
   const groups = Array.from(new Set(factors.map((f) => f.group)));
 
   return (

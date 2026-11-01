@@ -43,3 +43,27 @@ export function fmtDate(iso: string | undefined): string {
     timeZone: 'UTC',
   });
 }
+
+/** ISO timestamp -> "31 Oct 2026, 2:15 pm IST". */
+export function fmtDateTime(iso: string | null | undefined): string {
+  if (!iso) return 'never';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return 'unknown';
+  const s = d.toLocaleString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: 'Asia/Kolkata',
+  });
+  return `${s} IST`;
+}
+
+/** Hours since an ISO timestamp (Infinity when missing). */
+export function hoursSince(iso: string | null | undefined, now = new Date()): number {
+  if (!iso) return Infinity;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? Infinity : (now.getTime() - t) / 3_600_000;
+}

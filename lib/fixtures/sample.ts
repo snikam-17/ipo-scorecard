@@ -6,7 +6,7 @@ import type { Ipo } from '../types';
  * before a real data feed is connected. They are flagged `dataSource: 'demo'` and the UI
  * shows a banner whenever demo records are on screen. Never present them as real filings.
  */
-export const SEED_IPOS: Ipo[] = [
+export const SAMPLE_IPOS: Ipo[] = [
   {
     slug: 'demo-auto-components',
     name: 'Demo Auto Components Ltd',

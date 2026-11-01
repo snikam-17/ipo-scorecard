@@ -7,6 +7,7 @@
 
 export type IssueType = 'Fresh Issue' | 'Offer for Sale' | 'Fresh Issue + OFS';
 export type IpoStatus = 'Upcoming' | 'Open' | 'Closed' | 'Listed';
+export type Exchange = 'NSE' | 'BSE' | 'NSE + BSE' | 'Not stated';
 export type DataSource = 'api' | 'manual' | 'demo';
 export type ProceedsCategory = 'growth' | 'debt' | 'general' | 'other';
 
@@ -44,11 +45,74 @@ export interface SourceDoc {
   url?: string;
 }
 
+/**
+ * Live listing data, synced automatically from the exchange-issue feed (see lib/providers/upstox.ts).
+ * Contains only what the feed reports: no financials. Never edited by hand.
+ */
+export interface IpoListing {
+  slug: string;
+  name: string;
+  symbol: string | null;
+  isin: string | null;
+  sector: string;
+  segment: 'Mainboard' | 'SME';
+  exchange: Exchange;
+  status: IpoStatus;
+  openDate: string | null; // YYYY-MM-DD
+  closeDate: string | null;
+  allotmentDate: string | null;
+  listingDate: string | null;
+  priceBandLow: number; // 0 = not announced yet
+  priceBandHigh: number;
+  faceValue: number | null;
+  lotSize: number | null;
+  issueSizeCr: number | null;
+  subscriptionX: number | null; // overall subscription multiple, e.g. 3.2 = 3.2x
+  listingPrice: number | null;
+  registrarName: string | null;
+  rhpUrl: string | null;
+  drhpUrl: string | null;
+  syncedAt: string; // ISO timestamp of the sync that produced this record
+}
+
+/**
+ * Fundamentals entered from the offer document (RHP). Not available from any exchange feed.
+ * Loaded from data/facts/<slug>.json with `npm run facts:load`.
+ * Price band, lot size, dates and issue size always come from the live listing, never from here.
+ */
+export interface IpoFacts {
+  slug: string;
+  company: Ipo['company'];
+  issue: {
+    freshIssueCr: number;
+    ofsCr: number;
+    ofsFromPromotersPct: number;
+    sharesPreIssueCr: number;
+    promoterHoldingPrePct: number;
+    quota: { retail: number; qib: number; nii: number };
+    proceeds: ProceedsItem[];
+    leadManagers: string[];
+  };
+  financials: FinancialYear[];
+  peers: Peer[];
+  sourceDocs: SourceDoc[];
+  asOf: string; // date the facts were read from the offer document
+}
+
+/** What a page renders: the live listing, plus fundamentals and a rating-ready record when available. */
+export interface IpoEntry {
+  listing: IpoListing;
+  facts: IpoFacts | null;
+  /** Full record (listing + facts) ready for scoring. Null when it cannot be rated; see `pendingReason`. */
+  ipo: Ipo | null;
+  pendingReason: string | null;
+}
+
 export interface Ipo {
   slug: string;
   name: string;
   sector: string;
-  exchange: 'NSE' | 'BSE' | 'NSE + BSE';
+  exchange: Exchange;
   segment: 'Mainboard' | 'SME';
   status: IpoStatus;
   dataSource: DataSource;

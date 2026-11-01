@@ -1,76 +1,122 @@
 # IPO Scorecard
 
-A Next.js + Postgres website that scores upcoming Indian IPOs from 0 to 10 using **reported facts only**: financials, issue structure (fresh issue vs offer for sale), objects of the issue, shareholding, and valuation against peers. No predictions, no grey-market premium, no listing-gain guesses.
+A Next.js + Postgres website that lists every live and upcoming NSE/BSE IPO, keeps itself up to date, and gives each IPO a 0-10 fundamentals score built **only from reported facts**. No listing-gain guesses, no grey-market premium.
 
-## Run it
+## How the data flows
+
+```
+Upstox Developer API  --npm run sync (every 30 min)-->  ipo_listings  --\
+  live + upcoming NSE/BSE IPOs                           (no hand edits)  \
+  status, dates, price band, lot size,                                     >--> website (Neon Postgres)
+  issue size, subscription, RHP link                                      /
+                                                                         /
+data/facts/<id>.json  --npm run facts:load (on git push)-->  ipo_facts --/
+  fundamentals typed in from the RHP
+  (financials, fresh issue vs OFS, objects of the issue, promoter holding, peers, history)
+```
+
+- **Automatic part:** the list of IPOs and everything the exchange feed publishes. New IPOs appear on the site without you doing anything.
+- **Manual part:** fundamentals. No exchange feed or free API publishes restated financials, objects of the issue or peer tables in structured form; they live in the RHP. Each IPO gets a facts file. Until it exists the IPO is listed with "Rating pending" instead of a score.
+- **Never guessed:** if a value is missing, the page says so. If the facts file and the live feed disagree on issue size by more than 2%, the score is withheld and the page says "Needs review".
+
+### Why Upstox and not NSE/BSE directly
+
+NSE and BSE publish no official public API for IPO listings. The endpoints their websites use are unofficial, need cookie handshakes, change without notice and often refuse cloud servers, so a site built on them breaks without warning and may breach their terms. The Upstox Developer API returns the IPOs open for bidding on NSE and BSE (mainboard and SME) with a documented contract. The provider is isolated in `lib/providers/upstox.ts`, so another feed can be added or swapped without touching the rest.
+
+## Set up
 
 ```bash
 npm install
-npm run dev          # http://localhost:3000
+cp .env.example .env     # fill in DATABASE_URL and UPSTOX_ACCESS_TOKEN
+npm run db:init          # creates the tables (safe to re-run)
+npm run sync             # pulls live and upcoming IPOs
+npm run dev              # http://localhost:3000
 ```
 
-With no `DATABASE_URL` the site runs on **fictional demo data** (3 made-up companies, clearly bannered). Nothing on screen is a real filing until you connect a feed.
+If you ran the first version of this project's schema, run `db/migrate-v1-to-v2.sql` once before `db:init`.
 
-## Connect a database and real data
+### Getting an Upstox access token
 
-```bash
-cp .env.example .env          # set DATABASE_URL, IPO_API_URL, IPO_API_KEY
-npm run db:init               # creates tables from db/schema.sql
-npm run ingest                # pulls from the IPO API, validates, upserts, snapshots scores
-```
+1. Create an Upstox account and open the Upstox developer apps page (https://account.upstox.com/developer/apps).
+2. Create an app and generate an access token.
+3. Put it in `UPSTOX_ACCESS_TOKEN`.
 
-1. Pick an IPO data API (or start with manual entry from the RHP).
-2. Open `lib/providers/generic-json.ts` and edit `normalize()` to map the vendor's fields to the `Ipo` type in `lib/types.ts`.
-3. `lib/validate.ts` rejects incomplete or inconsistent records (price band, quotas summing to 100, objects of the issue summing to the fresh issue). Rejected records are never stored half-filled.
-4. Run `npm run ingest` on a schedule (cron / GitHub Actions) so new IPOs and updated RHPs flow in.
+**Check token lifetime.** Upstox access tokens may expire (some daily). When the token expires, `npm run sync` fails with a clear message, the site keeps showing the last good data, and shows an "update failed" notice after 24 hours. Check Upstox's current token documentation for a longer-lived option for read-only data, and put the new token in GitHub secrets when it changes.
 
-Each ingest also writes a row to `ipo_score_snapshots` (score, confidence, per-factor values, model version), so you can show how a rating changed over time.
+## Automatic updates (GitHub Actions)
+
+Add these in GitHub: **Settings, Secrets and variables, Actions**:
+
+| Secret | Value |
+|---|---|
+| `DATABASE_URL` | your Neon pooled connection string |
+| `UPSTOX_ACCESS_TOKEN` | the Upstox token |
+
+- `.github/workflows/sync.yml` runs `npm run sync` every 30 minutes on weekdays 08:30-18:30 IST and every 6 hours otherwise. You can also run it by hand from the **Actions** tab.
+- `.github/workflows/facts.yml` runs `npm run facts:load` whenever you push a change under `data/facts/`.
+
+Every sync is recorded in `sync_runs`. The site shows "Live data last updated ..." and warns when data is over 24 hours old or the last run failed.
+
+## Adding fundamentals for an IPO
+
+1. Find the listing id: open `/api/ipos` on your site and copy the `slug` (for example `acme-limited-ipo`).
+2. Copy `data/facts/_template.json` to `data/facts/<slug>.json`.
+3. Fill every field from the **Red Herring Prospectus** (company history, objects of the issue, summary financial information, promoter holding, basis for issue price/peers). Put the figures in ₹ crore, shares in crore. **Do not estimate.** If the RHP does not give a number, do not guess: the loader will reject the file and tell you what is missing.
+4. Add at least one `sourceDocs` entry naming the RHP and the date it was filed.
+5. `npm run facts:load` (or `git push`, and the workflow loads it).
+
+The loader checks that quotas add up to 100, that objects of the issue equal the fresh issue, that numbers are present, and that a source is named.
 
 ## How the score works
 
-`lib/scoring.ts` holds the whole model (version `1.0.0`). 11 factors, weights sum to 100:
+`lib/scoring.ts` holds the whole model (version `1.0.0`): 11 factors, weights summing to 100, each mapping one reported number to 0-10 on a published scale (shown on the `/methodology` page and in each IPO's breakdown). Missing factors are dropped and the rest re-weighted; each page shows how much weight had data. Tune thresholds and weights to your own view, then bump `MODEL_VERSION`. Every score change is stored in `ipo_score_snapshots`.
 
-| Group | Factor | Weight |
-|---|---|---|
-| Growth & profitability | Revenue CAGR | 14 |
-| | PAT margin | 12 |
-| | Profitable years | 8 |
-| | Return on equity | 14 |
-| Balance sheet & cash | Debt to equity | 10 |
-| | CFO / PAT | 8 |
-| Valuation | P/E vs peer median | 10 |
-| | P/B vs peer median | 4 |
-| Issue structure | Fresh issue share | 8 |
-| | Fresh issue funding growth | 6 |
-| | Promoter holding after issue | 6 |
+## Deploying (Vercel + Neon)
 
-Each factor maps one number to 0-10 with a piecewise-linear scale shown on the page. Missing factors are dropped and the rest re-weighted; the page shows how much weight had data. **Tune the thresholds and weights to your own view**, then bump `MODEL_VERSION`.
+1. Push to GitHub, import the repo in Vercel, add `DATABASE_URL`, deploy.
+2. Set the function region to Mumbai (bom1) under Settings, Functions.
+3. Add the two secrets above in GitHub so updates run.
 
 ## Project layout
 
 ```
-app/                 pages: / (list), /ipo/[slug] (detail), /methodology, /api/ipos
-components/          Ruler (the shared 0-10 scale), Charts (Recharts)
-lib/types.ts         canonical Ipo record
-lib/metrics.ts       derived numbers (P/E, P/B, ROE, market cap, post-issue holding ...)
+app/                 / (list), /ipo/[slug], /methodology, /api/ipos
+components/          Ruler (shared 0-10 scale), Charts, SyncNotice
+lib/providers/       listing feed adapter (upstox.ts)
+lib/merge.ts         joins live listing + facts, decides rated vs "Rating pending"
 lib/scoring.ts       the rating model
-lib/validate.ts      record validation
-lib/repo.ts          Postgres reads, demo-seed fallback
-lib/providers/       data-feed adapters
-scripts/             db-init, ingest, score-check
+lib/repo.ts          database reads (never falls back to made-up data)
+lib/db-write.ts      upserts, pruning of withdrawn issues, score snapshots
+scripts/             db-init, sync, facts-load, score-check, provider-check
+data/facts/          one JSON per IPO, read from the RHP
 db/schema.sql        tables
+lib/fixtures/        test-only sample data (never shown on the site)
 ```
 
 ## Checks
 
 ```bash
-npm run test:score   # scale maths, record validation, weights = 100, score ordering
+npm run test:score   # scoring maths and weights
+npm run test:feed    # feed mapping, merge rules and HTTP handling against a mock server
 npm run typecheck
 npm run build
 ```
 
 ## Before you go live
 
-- Replace demo data and confirm every number against the RHP; wrong data is the biggest risk to a facts-only product.
-- Keep the "not investment advice" footer. If you publish ratings commercially, check Indian regulations on research analyst / investment advice registration with a qualified professional.
-- Add peer data you trust: the valuation factors depend on the peers named in the offer document.
+- Confirm every facts file against the RHP; a wrong number is the biggest risk to a facts-only product.
+- Keep the "not investment advice" footer. If you publish ratings publicly, check Indian rules on research analyst / investment advice registration with a qualified professional.
+- Add privacy policy and contact pages.
+
+## AI research pipeline (ipoalerts.in + Claude) — `/api/cron/sync-ipos`
+
+A second, independent pipeline. It fetches UPCOMING, OPEN and the latest 3 CLOSED Mainboard and SME IPOs from `api.ipoalerts.in`, asks Claude (with web search) for a structured research payload, and upserts everything into the `ipos` table (conflict target: `symbol`).
+
+- Migration: `db/migrations/003_ipos_ai_pipeline.sql` (run it in the Neon SQL Editor).
+- Schedule: `vercel.json` (every 6 hours). **Vercel's free Hobby plan only allows one cron run per day and fails the deployment on anything more frequent.** On Hobby, either change the schedule to `0 2 * * *`, or delete the `crons` block and use `docs/trigger-sync.yml` (a GitHub Actions workflow that calls the endpoint every 6 hours).
+- Environment variables (in `.env.local` and in Vercel): `DATABASE_URL`, `IPO_ALERTS_API_KEY`, `ANTHROPIC_API_KEY`, `CRON_SECRET`. Optional tuning variables are listed in `.env.example`.
+- Research is bounded: at most `MAX_RESEARCH_PER_RUN` (default 3) IPOs per run, each only when it has no research or the research is older than `RESEARCH_TTL_HOURS` (default 72). Metadata (dates, price band, lot size, GMP, subscription) refreshes on every run for every IPO.
+- Calling it by hand: `curl -H "Authorization: Bearer $CRON_SECRET" https://<your-site>/api/cron/sync-ipos`. The JSON reply shows `processedCount`, `researchedCount`, `researchBacklog`, `failures` and `warnings`.
+- The AI output is a machine-generated draft: figures can be wrong. Every stored payload carries `sources`, `data_gaps`, `model` and `generated_at`, and anything shown to users should be labelled AI-generated and not investment advice.
+
+The first pipeline (Upstox + RHP facts files, tables `ipo_listings` / `ipo_facts`) is separate and its site pages do not read the `ipos` table. Choose one as the website's source of truth.

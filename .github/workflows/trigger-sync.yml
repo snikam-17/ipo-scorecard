@@ -1,0 +1,31 @@
+# OPTIONAL. Use this only if you are on Vercel's free (Hobby) plan, which allows a cron job to run just once per day.
+#
+# To use it: copy this file to .github/workflows/trigger-sync.yml, and delete the "crons" block from vercel.json
+# (otherwise Vercel cron AND this workflow both call the endpoint). Add two GitHub repository secrets:
+#   SITE_URL     e.g. https://your-project.vercel.app   (no trailing slash)
+#   CRON_SECRET  the same value as the CRON_SECRET environment variable in Vercel
+
+name: Trigger IPO research sync (daily, 09:00 IST)
+
+on:
+  schedule:
+    - cron: '30 3 * * *'   # once a day at 09:00 IST (GitHub cron runs in UTC)
+  workflow_dispatch:
+
+concurrency:
+  group: trigger-sync
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Call the sync endpoint
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl --fail-with-body --silent --show-error --max-time 330 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${SITE_URL}/api/cron/sync-ipos"

@@ -1,8 +1,22 @@
 import type { Pool } from 'pg';
-import type { Ipo } from './types';
-import { SEED_IPOS } from './data/seed';
+import type { IpoEntry, IpoFacts, IpoListing } from './types';
+import { buildEntry, isCurrent } from './merge';
 
-export type Source = 'database' | 'seed';
+export type RepoState = 'ok' | 'not_configured' | 'error';
+
+export interface SyncInfo {
+  lastRunAt: string | null;
+  lastRunOk: boolean | null;
+  lastRunError: string | null;
+  lastSuccessAt: string | null;
+}
+
+export interface RepoResult {
+  state: RepoState;
+  error?: string;
+  entries: IpoEntry[];
+  sync: SyncInfo | null;
+}
 
 let pool: Pool | null = null;
 
@@ -15,29 +29,50 @@ async function getPool(): Promise<Pool | null> {
   return pool;
 }
 
-export async function getAllIpos(): Promise<{ ipos: Ipo[]; source: Source }> {
+async function readSync(p: Pool): Promise<SyncInfo> {
+  const last = await p.query('select ran_at, ok, error from sync_runs order by ran_at desc limit 1');
+  const good = await p.query('select ran_at from sync_runs where ok order by ran_at desc limit 1');
+  return {
+    lastRunAt: last.rows[0] ? new Date(last.rows[0].ran_at).toISOString() : null,
+    lastRunOk: last.rows[0] ? last.rows[0].ok : null,
+    lastRunError: last.rows[0]?.error ?? null,
+    lastSuccessAt: good.rows[0] ? new Date(good.rows[0].ran_at).toISOString() : null,
+  };
+}
+
+const ENTRY_SQL = `select l.payload as listing, f.payload as facts
+                   from ipo_listings l left join ipo_facts f on f.slug = l.slug`;
+
+/**
+ * All IPOs worth showing. Never falls back to made-up data: when the database is missing or unreachable the
+ * result says so and the page shows that state instead.
+ */
+export async function getEntries(): Promise<RepoResult> {
   const p = await getPool();
-  if (!p) return { ipos: SEED_IPOS, source: 'seed' };
+  if (!p) return { state: 'not_configured', entries: [], sync: null };
   try {
-    const { rows } = await p.query('select payload from ipos order by open_date asc nulls last');
-    if (rows.length === 0) return { ipos: SEED_IPOS, source: 'seed' };
-    return { ipos: rows.map((r) => r.payload as Ipo), source: 'database' };
+    const { rows } = await p.query(ENTRY_SQL);
+    const now = new Date();
+    const entries = rows
+      .map((r) => buildEntry(r.listing as IpoListing, (r.facts as IpoFacts | null) ?? null))
+      .filter((e) => isCurrent(e.listing, now));
+    return { state: 'ok', entries, sync: await readSync(p) };
   } catch (err) {
-    // Surface the failure in logs; the UI still shows the demo banner because these records are flagged 'demo'.
-    console.error('[repo] database read failed, falling back to demo seed:', err);
-    return { ipos: SEED_IPOS, source: 'seed' };
+    console.error('[repo] database read failed:', err);
+    return { state: 'error', error: (err as Error).message, entries: [], sync: null };
   }
 }
 
-export async function getIpoBySlug(slug: string): Promise<Ipo | null> {
+export async function getEntry(slug: string): Promise<{ state: RepoState; entry: IpoEntry | null; sync: SyncInfo | null }> {
   const p = await getPool();
-  if (!p) return SEED_IPOS.find((i) => i.slug === slug) ?? null;
+  if (!p) return { state: 'not_configured', entry: null, sync: null };
   try {
-    const { rows } = await p.query('select payload from ipos where slug = $1', [slug]);
-    if (rows.length) return rows[0].payload as Ipo;
-    return SEED_IPOS.find((i) => i.slug === slug) ?? null;
+    const { rows } = await p.query(`${ENTRY_SQL} where l.slug = $1`, [slug]);
+    if (!rows.length) return { state: 'ok', entry: null, sync: await readSync(p) };
+    const entry = buildEntry(rows[0].listing as IpoListing, (rows[0].facts as IpoFacts | null) ?? null);
+    return { state: 'ok', entry, sync: await readSync(p) };
   } catch (err) {
-    console.error('[repo] database read failed, falling back to demo seed:', err);
-    return SEED_IPOS.find((i) => i.slug === slug) ?? null;
+    console.error('[repo] database read failed:', err);
+    return { state: 'error', entry: null, sync: null };
   }
 }

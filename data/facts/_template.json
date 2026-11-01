@@ -1,0 +1,36 @@
+{
+  "slug": "REPLACE-with-the-listing-id-exactly-as-shown-in-the-live-feed-eg-acme-limited-ipo",
+  "asOf": "2026-01-01",
+  "sourceDocs": [
+    { "label": "Company name RHP, filed DD Mon YYYY", "url": "https://link-to-the-rhp-pdf" }
+  ],
+  "company": {
+    "founded": 2000,
+    "headquarters": "City, State",
+    "description": "What the company does, in plain words, as the RHP describes it.",
+    "promoters": ["Promoter name"],
+    "history": [
+      { "year": 2000, "event": "Incorporated (from the RHP 'History and Certain Corporate Matters' section)." }
+    ]
+  },
+  "issue": {
+    "freshIssueCr": 0,
+    "ofsCr": 0,
+    "ofsFromPromotersPct": 0,
+    "sharesPreIssueCr": 0,
+    "promoterHoldingPrePct": 0,
+    "quota": { "retail": 35, "qib": 50, "nii": 15 },
+    "proceeds": [
+      { "purpose": "Objects of the issue, as worded in the RHP", "category": "growth", "amountCr": 0 }
+    ],
+    "leadManagers": ["Book running lead manager"]
+  },
+  "financials": [
+    { "fy": "FY24", "revenue": 0, "ebitda": 0, "pat": 0, "netWorth": 0, "totalDebt": 0, "cfo": 0 },
+    { "fy": "FY25", "revenue": 0, "ebitda": 0, "pat": 0, "netWorth": 0, "totalDebt": 0, "cfo": 0 },
+    { "fy": "FY26", "revenue": 0, "ebitda": 0, "pat": 0, "netWorth": 0, "totalDebt": 0, "cfo": 0 }
+  ],
+  "peers": [
+    { "name": "Listed peer named in the RHP", "pe": 0, "pb": 0, "roe": 0, "patMargin": 0 }
+  ]
+}

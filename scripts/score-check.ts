@@ -1,4 +1,4 @@
-import { SEED_IPOS } from '../lib/data/seed';
+import { SAMPLE_IPOS } from '../lib/fixtures/sample';
 import { scale, rate } from '../lib/scoring';
 import { validateIpo } from '../lib/validate';
 
@@ -13,7 +13,7 @@ check('scale clamps low', scale(-50, [[0, 2], [10, 8]]) === 2);
 check('scale clamps high', scale(50, [[0, 2], [10, 8]]) === 8);
 check('scale interpolates', Math.abs(scale(5, [[0, 2], [10, 8]]) - 5) < 1e-9);
 
-for (const ipo of SEED_IPOS) {
+for (const ipo of SAMPLE_IPOS) {
   const errs = validateIpo(ipo);
   check(`${ipo.slug}: validates`, errs.length === 0, errs.join('; '));
 
@@ -33,7 +33,7 @@ for (const ipo of SEED_IPOS) {
 }
 
 // Ordering sanity: the profitable, high-ROE business should outscore the loss-making one.
-const byslug = Object.fromEntries(SEED_IPOS.map((i) => [i.slug, rate(i).score ?? -1]));
+const byslug = Object.fromEntries(SAMPLE_IPOS.map((i) => [i.slug, rate(i).score ?? -1]));
 check('profitable company outscores loss-making company', byslug['demo-auto-components'] > byslug['sample-fintech']);
 
 if (failures) {

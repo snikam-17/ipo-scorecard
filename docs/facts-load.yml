@@ -1,0 +1,23 @@
+name: Load IPO facts
+
+# Runs whenever you add or change a facts file (fundamentals read from an RHP).
+on:
+  push:
+    branches: [main]
+    paths: ['data/facts/**']
+  workflow_dispatch:
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run facts:load
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}

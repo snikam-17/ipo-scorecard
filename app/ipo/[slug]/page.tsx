@@ -1,28 +1,33 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
-import { getIpoBySlug } from '@/lib/repo';
+import { getEntry, type SyncInfo } from '@/lib/repo';
 import { rate } from '@/lib/scoring';
 import { issueType } from '@/lib/metrics';
-import { fmtCr, fmtDate, fmtNum, fmtPct, fmtRs, fmtX } from '@/lib/format';
+import { fmtCr, fmtDate, fmtDateTime, fmtNum, fmtPct, fmtRs, fmtX } from '@/lib/format';
+import type { IpoEntry } from '@/lib/types';
 import { Ruler, toneFor } from '@/components/Ruler';
+import { SyncNotice } from '@/components/SyncNotice';
 import { FinancialsChart, MarginsChart, PeerBars } from '@/components/Charts';
 
 export const dynamic = 'force-dynamic';
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
-  const ipo = await getIpoBySlug(slug);
-  return { title: ipo ? `${ipo.name} IPO` : 'IPO not found' };
+  const { entry } = await getEntry(slug);
+  return { title: entry ? `${entry.listing.name} IPO` : 'IPO not found' };
 }
 
 const CATEGORY_LABEL = { growth: 'Growth / capex', debt: 'Debt repayment', general: 'General corporate', other: 'Other' } as const;
 
 export default async function IpoPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const ipo = await getIpoBySlug(slug);
-  if (!ipo) notFound();
+  const { entry, sync } = await getEntry(slug);
+  if (!entry) notFound();
+  if (!entry.ipo) return <ListingOnly entry={entry} sync={sync} />;
 
+  const ipo = entry.ipo;
+  const listing = entry.listing;
   const rating = rate(ipo);
   const m = rating.metrics;
   const type = issueType(ipo);
@@ -36,11 +41,7 @@ export default async function IpoPage({ params }: { params: Promise<{ slug: stri
         <Link href="/">← All upcoming IPOs</Link>
       </div>
 
-      {ipo.dataSource === 'demo' && (
-        <div className="banner" role="note">
-          <strong>Demo data.</strong> {ipo.name} is a fictional company. Every number on this page is made up.
-        </div>
-      )}
+      <SyncNotice sync={sync} />
 
       <div className="detail">
         {/* ---------- Left rail: score ---------- */}
@@ -89,6 +90,12 @@ export default async function IpoPage({ params }: { params: Promise<{ slug: stri
               Valuation figures use the upper price band, the pre-issue share count and the latest reported year ({m.latestFy}).
             </p>
             <dl className="facts">
+              {listing.subscriptionX !== null && listing.subscriptionX > 0 && (
+                <Fact label="Subscribed so far" value={fmtX(listing.subscriptionX, 2)} small="overall, live feed" />
+              )}
+              {listing.listingPrice !== null && listing.listingPrice > 0 && (
+                <Fact label="Listing price" value={fmtRs(listing.listingPrice)} />
+              )}
               <Fact label="Price band" value={`${fmtRs(issue.priceBandLow, 0)} - ${fmtRs(issue.priceBandHigh, 0)}`} />
               <Fact label="Face value" value={fmtRs(issue.faceValue, 0)} />
               <Fact label="Lot size" value={`${issue.lotSize} shares`} />
@@ -321,7 +328,11 @@ export default async function IpoPage({ params }: { params: Promise<{ slug: stri
 
           <section className="panel" id="sources">
             <h2>Sources</h2>
-            <p className="sub">Last updated {fmtDate(ipo.updatedAt)}. Data origin: {ipo.dataSource}.</p>
+            <p className="sub">
+              Dates, price band, lot size, issue size and subscription come from the live exchange-issue feed, last synced{' '}
+              {fmtDateTime(listing.syncedAt)}. Financials, issue structure and peers were read from the offer document
+              as of {fmtDate(entry.facts?.asOf)}.
+            </p>
             <ul className="muted" style={{ margin: 0, paddingLeft: 20 }}>
               {ipo.sourceDocs.map((d) => (
                 <li key={d.label}>{d.url ? <a href={d.url} rel="noopener noreferrer">{d.label}</a> : d.label}</li>
@@ -361,5 +372,63 @@ function ShareRow({ label, promoter, pub }: { label: string; promoter: number; p
         <span style={{ flex: Math.max(pub, 0.01), background: 'var(--s3)' }} />
       </div>
     </div>
+  );
+}
+
+/** Shown when live listing data exists but there is no honest basis for a score yet. */
+function ListingOnly({ entry, sync }: { entry: IpoEntry; sync: SyncInfo | null }) {
+  const l = entry.listing;
+  const minInvestment = l.priceBandHigh > 0 && l.lotSize ? l.priceBandHigh * l.lotSize : null;
+  const bandText = l.priceBandHigh > 0 ? `${fmtRs(l.priceBandLow, 0)} - ${fmtRs(l.priceBandHigh, 0)}` : 'Not announced';
+
+  return (
+    <main className="wrap">
+      <div className="crumb">
+        <Link href="/">← All IPOs</Link>
+      </div>
+      <SyncNotice sync={sync} />
+
+      <div className="head-block">
+        <h1 className="serif">{l.name}</h1>
+        <div className="tags">
+          <span className="chip">{l.sector}</span>
+          <span className="chip">{l.segment}</span>
+          <span className="chip">{l.exchange}</span>
+          <span className="chip">{l.status}</span>
+          <span className="chip">Rating pending</span>
+        </div>
+      </div>
+
+      <div className="banner" role="note" style={{ marginTop: 14 }}>
+        <strong>No score yet.</strong> {entry.pendingReason}
+      </div>
+
+      <section className="panel" style={{ marginTop: 18 }}>
+        <h2>Issue details</h2>
+        <p className="sub">From the live exchange-issue feed, last synced {fmtDateTime(l.syncedAt)}.</p>
+        <dl className="facts">
+          <Fact label="Price band" value={bandText} />
+          <Fact label="Face value" value={l.faceValue ? fmtRs(l.faceValue, 0) : 'n/a'} />
+          <Fact label="Lot size" value={l.lotSize ? `${l.lotSize} shares` : 'n/a'} />
+          <Fact label="Minimum investment" value={minInvestment ? fmtRs(minInvestment, 0) : 'n/a'} small={minInvestment ? '1 lot, upper band' : undefined} />
+          <Fact label="Issue size" value={l.issueSizeCr ? fmtCr(l.issueSizeCr) : 'n/a'} />
+          <Fact label="Subscribed so far" value={l.subscriptionX !== null && l.subscriptionX > 0 ? fmtX(l.subscriptionX, 2) : 'n/a'} small="overall" />
+          <Fact label="Bidding opens" value={fmtDate(l.openDate ?? undefined)} />
+          <Fact label="Bidding closes" value={fmtDate(l.closeDate ?? undefined)} />
+          <Fact label="Allotment" value={fmtDate(l.allotmentDate ?? undefined)} />
+          <Fact label="Listing" value={fmtDate(l.listingDate ?? undefined)} />
+          {l.listingPrice !== null && l.listingPrice > 0 && <Fact label="Listing price" value={fmtRs(l.listingPrice)} />}
+          <Fact label="Registrar" value={l.registrarName ?? 'n/a'} />
+        </dl>
+        {(l.rhpUrl || l.drhpUrl) && (
+          <p style={{ marginTop: 16, fontSize: 14 }}>
+            Offer document:{' '}
+            {l.rhpUrl && <a href={l.rhpUrl} rel="noopener noreferrer">Red Herring Prospectus</a>}
+            {l.rhpUrl && l.drhpUrl && ' · '}
+            {l.drhpUrl && <a href={l.drhpUrl} rel="noopener noreferrer">Draft Red Herring Prospectus</a>}
+          </p>
+        )}
+      </section>
+    </main>
   );
 }
