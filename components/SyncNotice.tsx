@@ -1,28 +1,25 @@
-import type { SyncInfo } from '@/lib/repo';
 import { fmtDateTime, hoursSince } from '@/lib/format';
 
-/** Tells the reader how fresh the live data is, and says so loudly when it is not. */
-export function SyncNotice({ sync }: { sync: SyncInfo | null }) {
-  if (!sync || !sync.lastSuccessAt) {
+/** Tells the reader how fresh the data is, and says so loudly when it is not. The sync runs once a day. */
+export function SyncNotice({ lastUpdatedAt }: { lastUpdatedAt: string | null }) {
+  if (!lastUpdatedAt) {
     return (
       <div className="banner" role="status">
-        <strong>No live data yet.</strong> The first sync from the exchange feed has not completed.
+        <strong>No IPO data yet.</strong> The first daily update has not completed.
       </div>
     );
   }
-  const stale = hoursSince(sync.lastSuccessAt) > 24;
-  const failing = sync.lastRunOk === false;
-  if (!stale && !failing) {
+  if (hoursSince(lastUpdatedAt) <= 36) {
     return (
       <p className="faint" style={{ fontSize: 13, marginBottom: 14 }}>
-        Live data last updated {fmtDateTime(sync.lastSuccessAt)}.
+        Data last updated {fmtDateTime(lastUpdatedAt)}. Updated once a day.
       </p>
     );
   }
   return (
     <div className="banner" role="status">
-      <strong>{failing ? 'The latest update failed.' : 'Data may be out of date.'}</strong> Showing the last successful update from{' '}
-      {fmtDateTime(sync.lastSuccessAt)}. Dates, price bands and subscription figures may have changed since.
+      <strong>Data may be out of date.</strong> The last successful update was {fmtDateTime(lastUpdatedAt)}. Dates, price
+      bands and subscription figures may have changed since.
     </div>
   );
 }

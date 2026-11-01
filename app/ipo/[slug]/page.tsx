@@ -1,71 +1,84 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
-import { getEntry, type SyncInfo } from '@/lib/repo';
-import { rate } from '@/lib/scoring';
-import { issueType } from '@/lib/metrics';
+import { getIpo, type IpoRecord } from '@/lib/ipos-repo';
 import { fmtCr, fmtDate, fmtDateTime, fmtNum, fmtPct, fmtRs, fmtX } from '@/lib/format';
-import type { IpoEntry } from '@/lib/types';
 import { Ruler, toneFor } from '@/components/Ruler';
 import { SyncNotice } from '@/components/SyncNotice';
-import { FinancialsChart, MarginsChart, PeerBars } from '@/components/Charts';
 
 export const dynamic = 'force-dynamic';
 
+// The [slug] folder name is kept; the value in the URL is the IPO's stock symbol, e.g. /ipo/BCSSL.
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
-  const { entry } = await getEntry(slug);
-  return { title: entry ? `${entry.listing.name} IPO` : 'IPO not found' };
+  const { ipo } = await getIpo(decodeURIComponent(slug));
+  return { title: ipo ? `${ipo.name} IPO` : 'IPO not found' };
 }
 
-const CATEGORY_LABEL = { growth: 'Growth / capex', debt: 'Debt repayment', general: 'General corporate', other: 'Other' } as const;
+const STATUS_LABEL = { OPEN: 'Open for bidding', UPCOMING: 'Opening soon', CLOSED: 'Closed' } as const;
+const isNotDisclosed = (s: string | null) => s === null || /^not disclosed/i.test(s.trim());
 
 export default async function IpoPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const { entry, sync } = await getEntry(slug);
-  if (!entry) notFound();
-  if (!entry.ipo) return <ListingOnly entry={entry} sync={sync} />;
+  const { state, ipo } = await getIpo(decodeURIComponent(slug));
 
-  const ipo = entry.ipo;
-  const listing = entry.listing;
-  const rating = rate(ipo);
-  const m = rating.metrics;
-  const type = issueType(ipo);
-  const tone = toneFor(rating.score);
-  const { issue, company, financials, peers } = ipo;
-  const groups = ['Growth & profitability', 'Balance sheet & cash', 'Valuation', 'Issue structure'] as const;
+  if (state !== 'ok') {
+    return (
+      <main className="wrap">
+        <div className="crumb"><Link href="/">← All IPOs</Link></div>
+        <div className="banner" role="alert">
+          <strong>{state === 'not_configured' ? 'Database not connected.' : 'The database could not be read.'}</strong> Please try again shortly.
+        </div>
+      </main>
+    );
+  }
+  if (!ipo) notFound();
+
+  const r = ipo.research;
+  const grounded = r?.grounded === true;
+  const tone = toneFor(ipo.rating);
+  const minBid = ipo.lotSize && ipo.priceBandHigh ? ipo.lotSize * ipo.priceBandHigh : null;
+  const gmpPct = ipo.gmpAmount !== null && ipo.priceBandHigh ? (ipo.gmpAmount / ipo.priceBandHigh) * 100 : null;
+  const showBusiness = !!r && !isNotDisclosed(r.businessModel);
 
   return (
     <main className="wrap">
       <div className="crumb">
-        <Link href="/">← All upcoming IPOs</Link>
+        <Link href="/">← All IPOs</Link>
       </div>
 
-      <SyncNotice sync={sync} />
+      <SyncNotice lastUpdatedAt={ipo.updatedAt} />
 
       <div className="detail">
-        {/* ---------- Left rail: score ---------- */}
+        {/* ---------- Left rail: rating ---------- */}
         <aside className="rail">
           <div className="panel score-panel">
-            <div>
-              <span className={`big tone-${tone}`}>{rating.score === null ? 'n/a' : rating.score.toFixed(1)}</span>
-              <span className="of">/ 10</span>
-            </div>
-            <div className={`band tone-${tone}`}>{rating.band}</div>
-            <Ruler score={rating.score} />
-            <div className="meta">
-              Based on {rating.factors.filter((f) => f.score !== null).length} of {rating.factors.length} factors
-              ({fmtPct(rating.confidence * 100, 0)} of the weight had data). Model v{rating.modelVersion}.
-            </div>
+            {ipo.rating !== null ? (
+              <>
+                <div>
+                  <span className={`big tone-${tone}`}>{ipo.rating.toFixed(1)}</span>
+                  <span className="of">/ 10</span>
+                </div>
+                {ipo.verdict && <div className={`band tone-${tone}`}>{ipo.verdict}</div>}
+                <Ruler score={ipo.rating} />
+                <div className="meta">AI-generated from web research. Not investment advice. Check the sources below.</div>
+              </>
+            ) : (
+              <>
+                <div className="band" style={{ fontSize: 22, margin: '0 0 6px' }}>Rating pending</div>
+                <p className="muted" style={{ fontSize: 14 }}>
+                  A rating needs the company&apos;s financial statements, which have not been researched for this IPO yet.
+                  Nothing is guessed in the meantime.
+                </p>
+              </>
+            )}
           </div>
           <nav className="panel toc" aria-label="On this page">
             <a href="#facts">Key facts</a>
-            <a href="#issue">Issue structure</a>
-            <a href="#financials">Financials</a>
-            <a href="#shareholding">Shareholding</a>
-            <a href="#valuation">Valuation vs peers</a>
-            <a href="#score">Score breakdown</a>
-            <a href="#history">Company history</a>
+            {showBusiness && <a href="#business">Business</a>}
+            {grounded && <a href="#financials">Financial highlights</a>}
+            {grounded && (r!.pros.length > 0 || r!.cons.length > 0) && <a href="#proscons">Strengths and risks</a>}
+            {r && r.dataGaps.length > 0 && <a href="#gaps">What is not known</a>}
             <a href="#sources">Sources</a>
           </nav>
         </aside>
@@ -75,360 +88,163 @@ export default async function IpoPage({ params }: { params: Promise<{ slug: stri
           <div className="head-block">
             <h1 className="serif">{ipo.name}</h1>
             <div className="tags">
-              <span className="chip">{ipo.sector}</span>
-              <span className="chip">{ipo.segment}</span>
-              <span className="chip">{ipo.exchange}</span>
-              <span className="chip">{ipo.status}</span>
-              <span className={`chip ${type === 'Fresh Issue' ? 'fresh' : type === 'Offer for Sale' ? 'ofs' : 'mix'}`}>{type}</span>
+              <span className="chip">{STATUS_LABEL[ipo.status]}</span>
+              <span className="chip">{ipo.category === 'SME' ? 'SME' : 'Mainboard'}</span>
+              {ipo.exchange && <span className="chip">{ipo.exchange}</span>}
+              <span className="chip">{ipo.symbol}</span>
             </div>
-            <p className="desc">{company.description}</p>
+            {r?.laymanSummary ? (
+              <p className="desc">{r.laymanSummary}</p>
+            ) : (
+              ipo.about && <p className="desc">{ipo.about}</p>
+            )}
+            <p className="faint" style={{ fontSize: 13, marginTop: 10 }}>
+              {r
+                ? `Summary written by AI${grounded ? ' from web research' : ' from the IPO listing data only; no financial statements were read'}.`
+                : 'No AI summary has been generated for this IPO yet.'}{' '}
+              It can contain mistakes, so verify against the Red Herring Prospectus.
+            </p>
           </div>
 
-          <section className="panel" id="facts">
-            <h2>Key facts</h2>
-            <p className="sub">
-              Valuation figures use the upper price band, the pre-issue share count and the latest reported year ({m.latestFy}).
-            </p>
-            <dl className="facts">
-              {listing.subscriptionX !== null && listing.subscriptionX > 0 && (
-                <Fact label="Subscribed so far" value={fmtX(listing.subscriptionX, 2)} small="overall, live feed" />
-              )}
-              {listing.listingPrice !== null && listing.listingPrice > 0 && (
-                <Fact label="Listing price" value={fmtRs(listing.listingPrice)} />
-              )}
-              <Fact label="Price band" value={`${fmtRs(issue.priceBandLow, 0)} - ${fmtRs(issue.priceBandHigh, 0)}`} />
-              <Fact label="Face value" value={fmtRs(issue.faceValue, 0)} />
-              <Fact label="Lot size" value={`${issue.lotSize} shares`} />
-              <Fact label="Minimum investment" value={fmtRs(m.minInvestment, 0)} small="1 lot, upper band" />
-              <Fact label="Issue size" value={fmtCr(m.totalIssueCr)} />
-              <Fact label="Market cap at upper band" value={fmtCr(m.marketCapCr)} small="post-issue" />
-              <Fact label={`EPS (${m.latestFy})`} value={fmtRs(m.eps)} />
-              <Fact label="Book value per share" value={fmtRs(m.bvps)} />
-              <Fact label="P/E" value={m.pe === null ? 'Loss-making' : fmtX(m.pe)} />
-              <Fact label="P/B" value={fmtX(m.pb)} />
-              <Fact label="Return on equity" value={fmtPct(m.roe)} />
-              <Fact label="Debt to equity" value={fmtX(m.debtToEquity, 2)} />
-              <Fact label="Revenue CAGR" value={fmtPct(m.revenueCagr)} small={`${m.yearsReported} yrs`} />
-              <Fact label="PAT margin" value={fmtPct(m.patMargin)} />
+          {/* Key facts: all from the IPO listing feed */}
+          <section className="panel" id="facts" aria-labelledby="facts-h">
+            <h2 id="facts-h">Key facts</h2>
+            <p className="sub">From the IPO listing data. Dates are in Indian time.</p>
+            <dl className="facts" style={{ margin: 0 }}>
+              <Fact label="Status" value={STATUS_LABEL[ipo.status]} />
+              <Fact label="Bidding opens" value={ipo.openDate ? fmtDate(ipo.openDate) : 'Not announced'} />
+              <Fact label="Bidding closes" value={ipo.closeDate ? fmtDate(ipo.closeDate) : 'Not announced'} />
+              <Fact label="Allotment" value={ipo.allotmentDate ? fmtDate(ipo.allotmentDate) : 'Not announced'} />
+              <Fact label="Listing" value={ipo.listingDate ? fmtDate(ipo.listingDate) : 'Not announced'} />
+              <Fact label="Price band" value={ipo.priceBand ?? 'Not announced'} />
+              <Fact label="Lot size" value={ipo.lotSize ? `${fmtNum(ipo.lotSize)} shares` : 'n/a'} />
+              <Fact
+                label="Minimum bid"
+                value={minBid ? fmtRs(minBid, 0) : 'n/a'}
+                note={minBid ? '1 lot at the upper price' : undefined}
+              />
+              <Fact label="Issue size" value={ipo.issueSizeCr ? fmtCr(ipo.issueSizeCr) : 'n/a'} />
+              <Fact
+                label="Subscription"
+                value={ipo.subscriptionX !== null && ipo.subscriptionX > 0 ? fmtX(ipo.subscriptionX, 2) : 'Not available'}
+                note={ipo.subscriptionX ? 'times the shares offered' : undefined}
+              />
+              <Fact
+                label="Grey market premium"
+                value={ipo.gmpAmount !== null ? fmtRs(ipo.gmpAmount, 0) : 'Not available'}
+                note={gmpPct !== null ? `${fmtPct(gmpPct, 1)} of upper price. Unofficial, not a prediction.` : undefined}
+              />
             </dl>
           </section>
 
-          <section className="panel" id="issue">
-            <h2>Issue structure</h2>
-            <p className="sub">
-              A fresh issue raises money for the company. An offer for sale (OFS) moves existing shares from selling
-              shareholders to new investors, so the company receives nothing from that part.
-            </p>
+          {showBusiness && (
+            <section className="panel" id="business" aria-labelledby="business-h">
+              <h2 id="business-h">Business</h2>
+              <p className="sub">How the company makes money.</p>
+              <p style={{ maxWidth: '72ch' }}>{r!.businessModel}</p>
+            </section>
+          )}
 
-            <div className="sub-h">What is being sold: {fmtCr(m.totalIssueCr)}</div>
-            <div className="stack" role="img" aria-label={`Fresh issue ${fmtPct(m.freshSharePct, 0)}, offer for sale ${fmtPct(m.ofsSharePct, 0)}`}>
-              {issue.freshIssueCr > 0 && <span style={{ flex: issue.freshIssueCr, background: 'var(--s1)' }} />}
-              {issue.ofsCr > 0 && <span style={{ flex: issue.ofsCr, background: 'var(--s2)' }} />}
-            </div>
-            <div className="legend">
-              <span><i style={{ background: 'var(--s1)' }} />Fresh issue {fmtCr(issue.freshIssueCr)} ({fmtPct(m.freshSharePct, 0)})</span>
-              <span><i style={{ background: 'var(--s2)' }} />Offer for sale {fmtCr(issue.ofsCr)} ({fmtPct(m.ofsSharePct, 0)})</span>
-            </div>
-            {issue.ofsCr > 0 && (
-              <p className="muted" style={{ marginTop: 10, fontSize: 14 }}>
-                Promoters sell {fmtPct(issue.ofsFromPromotersPct, 0)} of the offer for sale; other selling shareholders sell the rest.
-              </p>
-            )}
+          {grounded && r && (
+            <section className="panel" id="financials" aria-labelledby="fin-h">
+              <h2 id="fin-h">Financial highlights</h2>
+              <p className="sub">As found by the AI in public sources. Check each figure against the offer document.</p>
+              <dl className="facts" style={{ margin: 0 }}>
+                <Fact label="Revenue growth" value={r.revenueGrowth ?? 'Not found'} small />
+                <Fact label="Profit after tax" value={r.patMargin ?? 'Not found'} small />
+                <Fact label="Debt" value={r.debtEquity ?? 'Not found'} small />
+                <Fact label="Return ratios" value={r.roeRoce ?? 'Not found'} small />
+              </dl>
+              {r.peerComparison && !isNotDisclosed(r.peerComparison) && (
+                <p style={{ marginTop: 14, maxWidth: '72ch' }}>
+                  <strong>Against listed peers: </strong>
+                  {r.peerComparison}
+                </p>
+              )}
+            </section>
+          )}
 
-            <div className="two" style={{ marginTop: 26 }}>
-              <div>
-                <div className="sub-h">Objects of the fresh issue</div>
-                {issue.proceeds.length === 0 ? (
-                  <p className="muted" style={{ fontSize: 14 }}>No fresh issue, so the company receives no proceeds.</p>
-                ) : (
-                  <div className="bar-rows">
-                    {issue.proceeds.map((p) => (
-                      <div className="bar-row" key={p.purpose}>
-                        <div className="lab">
-                          <span>{p.purpose} <span className="faint">({CATEGORY_LABEL[p.category]})</span></span>
-                          <b>{fmtCr(p.amountCr)}</b>
-                        </div>
-                        <div className="hbar"><span style={{ width: `${(p.amountCr / issue.freshIssueCr) * 100}%` }} /></div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <div className="sub-h">Investor quota</div>
-                <div className="stack" role="img" aria-label={`Retail ${issue.quota.retail}%, QIB ${issue.quota.qib}%, NII ${issue.quota.nii}%`}>
-                  <span style={{ flex: issue.quota.retail, background: 'var(--s1)' }} />
-                  <span style={{ flex: issue.quota.qib, background: 'var(--s2)' }} />
-                  <span style={{ flex: issue.quota.nii, background: 'var(--s3)' }} />
+          {grounded && r && (r.pros.length > 0 || r.cons.length > 0) && (
+            <section className="panel" id="proscons" aria-labelledby="pc-h">
+              <h2 id="pc-h">Strengths and risks</h2>
+              <p className="sub">Both sides, as the AI read them from its sources.</p>
+              <div className="two">
+                <div>
+                  <h3 className="sub-h">Strengths</h3>
+                  <ul style={{ paddingLeft: 18, display: 'grid', gap: 6, margin: 0 }}>
+                    {r.pros.map((p, n) => <li key={n}>{p}</li>)}
+                  </ul>
                 </div>
-                <div className="legend">
-                  <span><i style={{ background: 'var(--s1)' }} />Retail {issue.quota.retail}%</span>
-                  <span><i style={{ background: 'var(--s2)' }} />Qualified institutions {issue.quota.qib}%</span>
-                  <span><i style={{ background: 'var(--s3)' }} />Non-institutional {issue.quota.nii}%</span>
+                <div>
+                  <h3 className="sub-h">Risks</h3>
+                  <ul style={{ paddingLeft: 18, display: 'grid', gap: 6, margin: 0 }}>
+                    {r.cons.map((c, n) => <li key={n}>{c}</li>)}
+                  </ul>
                 </div>
-
-                <div className="sub-h" style={{ marginTop: 22 }}>Key dates</div>
-                <table className="t">
-                  <tbody>
-                    <tr><td>Opens</td><td>{fmtDate(issue.openDate)}</td></tr>
-                    <tr><td>Closes</td><td>{fmtDate(issue.closeDate)}</td></tr>
-                    <tr><td>Allotment</td><td>{fmtDate(issue.allotmentDate)}</td></tr>
-                    <tr><td>Listing</td><td>{fmtDate(issue.listingDate)}</td></tr>
-                  </tbody>
-                </table>
               </div>
-            </div>
+            </section>
+          )}
 
-            <div className="two" style={{ marginTop: 22 }}>
-              <div>
-                <div className="sub-h">Lead managers</div>
-                <p className="muted" style={{ fontSize: 14 }}>{issue.leadManagers.join(', ')}</p>
-              </div>
-              <div>
-                <div className="sub-h">Registrar</div>
-                <p className="muted" style={{ fontSize: 14 }}>{issue.registrar}</p>
-              </div>
-            </div>
-          </section>
+          {r && r.dataGaps.length > 0 && (
+            <section className="panel" id="gaps" aria-labelledby="gaps-h">
+              <h2 id="gaps-h">What is not known</h2>
+              <p className="sub">Things the AI could not find. They are left blank, not guessed.</p>
+              <ul style={{ paddingLeft: 18, display: 'grid', gap: 6, margin: 0 }}>
+                {r.dataGaps.map((g, n) => <li key={n}>{g}</li>)}
+              </ul>
+            </section>
+          )}
 
-          <section className="panel" id="financials">
-            <h2>Financials</h2>
-            <p className="sub">Restated figures from the offer document, in ₹ crore. The table below holds the exact numbers behind both charts.</p>
-            <div className="two">
-              <FinancialsChart data={financials} />
-              <MarginsChart data={financials} />
-            </div>
-
-            <div className="tscroll" style={{ marginTop: 22 }}>
-              <table className="t">
-                <thead>
-                  <tr>
-                    <th>₹ crore</th>
-                    {financials.map((f) => <th key={f.fy}>{f.fy}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  <Row label="Revenue" vals={financials.map((f) => fmtNum(f.revenue))} />
-                  <Row label="EBITDA" vals={financials.map((f) => fmtNum(f.ebitda))} />
-                  <Row label="EBITDA margin" vals={financials.map((f) => fmtPct(f.revenue > 0 ? (f.ebitda / f.revenue) * 100 : null))} />
-                  <Row label="Profit after tax" vals={financials.map((f) => fmtNum(f.pat))} hl />
-                  <Row label="PAT margin" vals={financials.map((f) => fmtPct(f.revenue > 0 ? (f.pat / f.revenue) * 100 : null))} />
-                  <Row label="Net worth" vals={financials.map((f) => fmtNum(f.netWorth))} />
-                  <Row label="Total debt" vals={financials.map((f) => fmtNum(f.totalDebt))} />
-                  <Row label="Cash flow from operations" vals={financials.map((f) => fmtNum(f.cfo))} />
-                  <Row label="Return on equity" vals={financials.map((f) => fmtPct(f.netWorth > 0 ? (f.pat / f.netWorth) * 100 : null))} />
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <section className="panel" id="shareholding">
-            <h2>Shareholding before and after the issue</h2>
-            <p className="sub">
-              Promoter holding falls when promoters sell in the OFS and when new shares are issued. Computed from the issue size, upper price band and pre-issue holding.
-            </p>
-            <div className="bar-rows">
-              <ShareRow label="Before the IPO" promoter={m.promoterPrePct} pub={m.publicPrePct} />
-              <ShareRow label="After the IPO" promoter={m.promoterPostPct} pub={m.publicPostPct} />
-            </div>
-            <div className="legend">
-              <span><i style={{ background: 'var(--s1)' }} />Promoters</span>
-              <span><i style={{ background: 'var(--s3)' }} />Public and other shareholders</span>
-            </div>
-          </section>
-
-          <section className="panel" id="valuation">
-            <h2>Valuation against listed peers</h2>
-            <p className="sub">
-              {m.pe === null
-                ? `The company reported a loss in ${m.latestFy}, so a price-to-earnings ratio is not meaningful. `
-                : `At the upper price band the IPO is priced at ${fmtX(m.pe)} earnings; the peer median is ${fmtX(m.peerMedianPe)}. `}
-              {m.pb !== null && `Price to book is ${fmtX(m.pb)} against a peer median of ${fmtX(m.peerMedianPb)}.`}
-            </p>
-            <div className="charts-3">
-              <PeerBars metric="pe" company="This IPO" value={m.pe} peers={peers} />
-              <PeerBars metric="pb" company="This IPO" value={m.pb} peers={peers} />
-              <PeerBars metric="roe" company="This IPO" value={m.roe} peers={peers} />
-            </div>
-            <div className="tscroll" style={{ marginTop: 18 }}>
-              <table className="t">
-                <thead>
-                  <tr><th>Company</th><th>P/E</th><th>P/B</th><th>ROE</th><th>PAT margin</th></tr>
-                </thead>
-                <tbody>
-                  <tr className="hl">
-                    <td>{ipo.name} (IPO)</td>
-                    <td>{m.pe === null ? 'n/m' : fmtX(m.pe)}</td>
-                    <td>{fmtX(m.pb)}</td>
-                    <td>{fmtPct(m.roe)}</td>
-                    <td>{fmtPct(m.patMargin)}</td>
-                  </tr>
-                  {peers.map((p) => (
-                    <tr key={p.name}>
-                      <td>{p.name}</td>
-                      <td>{p.pe === null ? 'n/m' : fmtX(p.pe)}</td>
-                      <td>{fmtX(p.pb)}</td>
-                      <td>{fmtPct(p.roe)}</td>
-                      <td>{fmtPct(p.patMargin)}</td>
-                    </tr>
-                  ))}
-                  <tr>
-                    <td>Peer median</td>
-                    <td>{fmtX(m.peerMedianPe)}</td>
-                    <td>{fmtX(m.peerMedianPb)}</td>
-                    <td colSpan={2} />
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <section className="panel" id="score">
-            <h2>Score breakdown</h2>
-            <p className="sub">
-              Each factor turns one reported number into a 0 to 10 score on a fixed scale. The overall score is the weighted
-              average of the factors that have data.
-            </p>
-            {groups.map((g) => {
-              const fs = rating.factors.filter((f) => f.group === g);
-              const w = fs.reduce((s, f) => s + f.weight, 0);
-              return (
-                <div className="factor-group" key={g}>
-                  <h3><span>{g}</span><span>{w}% of score</span></h3>
-                  {fs.map((f) => (
-                    <div className="factor" key={f.key}>
-                      <div className="nm">{f.label} <span className="wt">· weight {f.weight}%</span></div>
-                      <div className="val">{f.value}</div>
-                      <div className="rl"><Ruler score={f.score} size="sm" label={f.score === null ? `${f.label}: no data` : `${f.label}: ${f.score} out of 10`} /></div>
-                      <div className={`sc tone-${toneFor(f.score)}`}>{f.score === null ? 'n/a' : f.score.toFixed(1)}</div>
-                      <details>
-                        <summary>How this is scored</summary>
-                        <p>{f.rule}{f.note ? ` ${f.note}` : ''}</p>
-                      </details>
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-          </section>
-
-          <section className="panel" id="history">
-            <h2>Company history</h2>
-            <p className="sub">Founded {company.founded}, headquartered in {company.headquarters}. Promoters: {company.promoters.join(', ')}.</p>
-            <ol className="timeline">
-              {company.history.map((h) => (
-                <li key={`${h.year}-${h.event}`}>
-                  <div className="yr">{h.year}</div>
-                  <div className="ev">{h.event}</div>
-                </li>
-              ))}
-            </ol>
-          </section>
-
-          <section className="panel" id="sources">
-            <h2>Sources</h2>
-            <p className="sub">
-              Dates, price band, lot size, issue size and subscription come from the live exchange-issue feed, last synced{' '}
-              {fmtDateTime(listing.syncedAt)}. Financials, issue structure and peers were read from the offer document
-              as of {fmtDate(entry.facts?.asOf)}.
-            </p>
-            <ul className="muted" style={{ margin: 0, paddingLeft: 20 }}>
-              {ipo.sourceDocs.map((d) => (
-                <li key={d.label}>{d.url ? <a href={d.url} rel="noopener noreferrer">{d.label}</a> : d.label}</li>
-              ))}
-            </ul>
-          </section>
+          <Sources ipo={ipo} />
         </div>
       </div>
     </main>
   );
 }
 
-function Fact({ label, value, small }: { label: string; value: string; small?: string }) {
+function Fact({ label, value, note, small }: { label: string; value: string; note?: string; small?: boolean }) {
   return (
     <div className="fact">
       <dt>{label}</dt>
-      <dd>{value}{small ? <> <small>{small}</small></> : null}</dd>
-    </div>
-  );
-}
-
-function Row({ label, vals, hl }: { label: string; vals: string[]; hl?: boolean }) {
-  return (
-    <tr className={hl ? 'hl' : undefined}>
-      <td>{label}</td>
-      {vals.map((v, i) => <td key={i}>{v}</td>)}
-    </tr>
-  );
-}
-
-function ShareRow({ label, promoter, pub }: { label: string; promoter: number; pub: number }) {
-  return (
-    <div className="bar-row">
-      <div className="lab"><span>{label}</span><b>Promoters {fmtPct(promoter)} · Public {fmtPct(pub)}</b></div>
-      <div className="stack" role="img" aria-label={`${label}: promoters ${fmtPct(promoter)}, public ${fmtPct(pub)}`}>
-        <span style={{ flex: Math.max(promoter, 0.01), background: 'var(--s1)' }} />
-        <span style={{ flex: Math.max(pub, 0.01), background: 'var(--s3)' }} />
-      </div>
-    </div>
-  );
-}
-
-/** Shown when live listing data exists but there is no honest basis for a score yet. */
-function ListingOnly({ entry, sync }: { entry: IpoEntry; sync: SyncInfo | null }) {
-  const l = entry.listing;
-  const minInvestment = l.priceBandHigh > 0 && l.lotSize ? l.priceBandHigh * l.lotSize : null;
-  const bandText = l.priceBandHigh > 0 ? `${fmtRs(l.priceBandLow, 0)} - ${fmtRs(l.priceBandHigh, 0)}` : 'Not announced';
-
-  return (
-    <main className="wrap">
-      <div className="crumb">
-        <Link href="/">← All IPOs</Link>
-      </div>
-      <SyncNotice sync={sync} />
-
-      <div className="head-block">
-        <h1 className="serif">{l.name}</h1>
-        <div className="tags">
-          <span className="chip">{l.sector}</span>
-          <span className="chip">{l.segment}</span>
-          <span className="chip">{l.exchange}</span>
-          <span className="chip">{l.status}</span>
-          <span className="chip">Rating pending</span>
-        </div>
-      </div>
-
-      <div className="banner" role="note" style={{ marginTop: 14 }}>
-        <strong>No score yet.</strong> {entry.pendingReason}
-      </div>
-
-      <section className="panel" style={{ marginTop: 18 }}>
-        <h2>Issue details</h2>
-        <p className="sub">From the live exchange-issue feed, last synced {fmtDateTime(l.syncedAt)}.</p>
-        <dl className="facts">
-          <Fact label="Price band" value={bandText} />
-          <Fact label="Face value" value={l.faceValue ? fmtRs(l.faceValue, 0) : 'n/a'} />
-          <Fact label="Lot size" value={l.lotSize ? `${l.lotSize} shares` : 'n/a'} />
-          <Fact label="Minimum investment" value={minInvestment ? fmtRs(minInvestment, 0) : 'n/a'} small={minInvestment ? '1 lot, upper band' : undefined} />
-          <Fact label="Issue size" value={l.issueSizeCr ? fmtCr(l.issueSizeCr) : 'n/a'} />
-          <Fact label="Subscribed so far" value={l.subscriptionX !== null && l.subscriptionX > 0 ? fmtX(l.subscriptionX, 2) : 'n/a'} small="overall" />
-          <Fact label="Bidding opens" value={fmtDate(l.openDate ?? undefined)} />
-          <Fact label="Bidding closes" value={fmtDate(l.closeDate ?? undefined)} />
-          <Fact label="Allotment" value={fmtDate(l.allotmentDate ?? undefined)} />
-          <Fact label="Listing" value={fmtDate(l.listingDate ?? undefined)} />
-          {l.listingPrice !== null && l.listingPrice > 0 && <Fact label="Listing price" value={fmtRs(l.listingPrice)} />}
-          <Fact label="Registrar" value={l.registrarName ?? 'n/a'} />
-        </dl>
-        {(l.rhpUrl || l.drhpUrl) && (
-          <p style={{ marginTop: 16, fontSize: 14 }}>
-            Offer document:{' '}
-            {l.rhpUrl && <a href={l.rhpUrl} rel="noopener noreferrer">Red Herring Prospectus</a>}
-            {l.rhpUrl && l.drhpUrl && ' · '}
-            {l.drhpUrl && <a href={l.drhpUrl} rel="noopener noreferrer">Draft Red Herring Prospectus</a>}
-          </p>
+      <dd style={small ? { fontSize: 14, fontWeight: 500 } : undefined}>
+        {value}
+        {note && (
+          <>
+            <br />
+            <small>{note}</small>
+          </>
         )}
-      </section>
-    </main>
+      </dd>
+    </div>
+  );
+}
+
+function Sources({ ipo }: { ipo: IpoRecord }) {
+  const r = ipo.research;
+  return (
+    <section className="panel" id="sources" aria-labelledby="src-h">
+      <h2 id="src-h">Sources</h2>
+      <p className="sub">Where this page&apos;s information comes from.</p>
+      <ul style={{ paddingLeft: 18, display: 'grid', gap: 6, margin: 0 }}>
+        <li>IPO listing data (dates, price band, lot size, issue size, subscription) from the ipoalerts.in data service.</li>
+        {ipo.prospectusUrl && (
+          <li>
+            <a href={ipo.prospectusUrl} target="_blank" rel="noopener noreferrer">Offer document (prospectus)</a>
+          </li>
+        )}
+        {r?.sources.map((s) => (
+          <li key={s.url}>
+            <a href={s.url} target="_blank" rel="noopener noreferrer">{s.title}</a>
+          </li>
+        ))}
+        {r && !r.grounded && <li>No other sources were consulted for the AI summary.</li>}
+      </ul>
+      {r && (
+        <p className="faint" style={{ fontSize: 13, marginTop: 12 }}>
+          AI summary generated {r.generatedAt ? fmtDateTime(r.generatedAt) : fmtDateTime(ipo.researchedAt)}
+          {r.model ? ` by ${r.model}` : ''}.
+        </p>
+      )}
+    </section>
   );
 }
